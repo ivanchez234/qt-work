@@ -8,7 +8,6 @@ StatisticsDialog::StatisticsDialog(QWidget *parent)
     , ui(new Ui::StatisticsDialog)
 {
     ui->setupUi(this);
-
     ui->cbMonth->setCurrentIndex(0);
 }
 
@@ -16,6 +15,7 @@ StatisticsDialog::~StatisticsDialog()
 {
     delete ui;
 }
+
 void StatisticsDialog::setAirportInfo(const QString &airportName, const QString &airportCode)
 {
     m_airportCode = airportCode;
@@ -24,6 +24,7 @@ void StatisticsDialog::setAirportInfo(const QString &airportName, const QString 
     loadYearlyStatistics();
     loadMonthlyStatistics();
 }
+
 void StatisticsDialog::on_btnCloseDialog_clicked()
 {
     accept();
@@ -34,7 +35,7 @@ void StatisticsDialog::loadYearlyStatistics()
     QSqlQuery query;
     query.prepare("SELECT count(flight_no), date_trunc('month', scheduled_departure) as \"Month\" "
                   "FROM bookings.flights f "
-                  "WHERE (scheduled_departure::date > date('2016-08-31') AND scheduled_departure::date <= date('2017-08-31')) "
+                  "WHERE (scheduled_departure::date >= date('2016-08-15') AND scheduled_departure::date <= date('2017-09-14')) "
                   "AND (departure_airport = :code OR arrival_airport = :code) "
                   "GROUP BY \"Month\" ORDER BY \"Month\"");
     query.bindValue(":code", m_airportCode);
@@ -95,7 +96,7 @@ void StatisticsDialog::loadMonthlyStatistics()
     QSqlQuery query;
     query.prepare("SELECT count(flight_no), date_trunc('day', scheduled_departure) as \"Day\" "
                   "FROM bookings.flights f "
-                  "WHERE (scheduled_departure::date > date('2016-08-31') AND scheduled_departure::date <= date('2017-08-31')) "
+                  "WHERE (scheduled_departure::date >= date('2016-08-15') AND scheduled_departure::date <= date('2017-09-14')) "
                   "AND (departure_airport = :code OR arrival_airport = :code) "
                   "GROUP BY \"Day\" ORDER BY \"Day\"");
     query.bindValue(":code", m_airportCode);
@@ -119,31 +120,52 @@ void StatisticsDialog::on_cbMonth_currentIndexChanged(int index)
 void StatisticsDialog::updateMonthlyChart(int monthIndex)
 {
     int targetMonth = monthIndex + 1;
+    int targetYear = (targetMonth >= 9) ? 2016 : 2017;
 
     QLineSeries *series = new QLineSeries();
+    series->setPointsVisible(true);
+    // Убираем постоянные подписи над каждой точкой, чтобы они не слипались
+    series->setPointLabelsVisible(false);
+
+    int maxFlights = 0;
 
     for (const auto &stat : m_dailyStats) {
-        if (stat.first.month() == targetMonth) {
-            series->append(stat.first.day(), stat.second);
+        if (stat.first.month() == targetMonth && stat.first.year() == targetYear) {
+            int day = stat.first.day();
+            int flights = stat.second;
+            series->append(day, flights);
+
+            if (flights > maxFlights) {
+                maxFlights = flights;
+            }
         }
     }
 
     QChart *chart = new QChart();
     chart->addSeries(series);
-    chart->setTitle(QString("Загруженность за %1").arg(ui->cbMonth->itemText(monthIndex)));
+    chart->setTitle(QString("Загруженность за %1 %2 г.")
+                        .arg(ui->cbMonth->itemText(monthIndex))
+                        .arg(targetYear));
     chart->setAnimationOptions(QChart::SeriesAnimations);
     chart->legend()->hide();
 
     QValueAxis *axisX = new QValueAxis();
     axisX->setLabelFormat("%i");
     axisX->setTitleText("Число месяца");
-    axisX->setTickCount(series->count() > 0 ? series->count() : 1);
+    axisX->setRange(1, 31);
+    // Настраиваем 7 засечек (1, 6, 11, 16, 21, 26, 31), чтобы текст влезал по ширине
+    axisX->setTickCount(7);
+
     chart->addAxis(axisX, Qt::AlignBottom);
     series->attachAxis(axisX);
 
     QValueAxis *axisY = new QValueAxis();
     axisY->setLabelFormat("%i");
     axisY->setTitleText("Количество рейсов");
+
+    int yUpperLimit = (maxFlights > 0) ? maxFlights + 5 : 5;
+    axisY->setRange(0, yUpperLimit);
+
     chart->addAxis(axisY, Qt::AlignLeft);
     series->attachAxis(axisY);
 
