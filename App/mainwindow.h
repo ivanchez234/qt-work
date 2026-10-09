@@ -4,6 +4,7 @@
 #include <QMainWindow>
 #include <QSqlDatabase>
 #include <QSqlError>
+#include <QSqlQuery>
 #include <QTimer>
 #include <QMessageBox>
 #include <QSqlQueryModel>
@@ -30,6 +31,12 @@ private slots:
     void on_btnShowStats_clicked();
 
 private:
+    void loadAirports();
+    void setControlsEnabled(bool enabled);
+    void setStatus(const QString &text, const QString &color, const QString &details = QString());
+    void handleQueryError(const QSqlQuery &query, const QString &what);
+    void startReconnecting(const QString &text, const QString &details);
+
     Ui::MainWindow *ui;
     QSqlDatabase db;
     QTimer *reconnectTimer;

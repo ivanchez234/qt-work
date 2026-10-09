@@ -4,6 +4,7 @@
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QVariant>
+#include <utility>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -12,8 +13,7 @@ MainWindow::MainWindow(QWidget *parent)
     ui->setupUi(this);
     queryModel = new QSqlQueryModel(this);
     ui->tvSchedule->setModel(queryModel);
-    ui->lblDbStatus->setText("Отключено");
-    ui->lblDbStatus->setStyleSheet("color: red;");
+    setStatus("Подключение…", "gray");
 
     db = QSqlDatabase::addDatabase("QPSQL");
     db.setHostName("981757-ca08998.tmweb.ru");
@@ -22,11 +22,13 @@ MainWindow::MainWindow(QWidget *parent)
     db.setUserName("netology_usr_cpp");
     db.setPassword("CppNeto3");
 
+    db.setConnectOptions("connect_timeout=3");
+
     reconnectTimer = new QTimer(this);
     reconnectTimer->setInterval(5000);
     connect(reconnectTimer, &QTimer::timeout, this, &MainWindow::attemptConnection);
 
-    attemptConnection();
+    QTimer::singleShot(100, this, &MainWindow::attemptConnection);
 }
 
 MainWindow::~MainWindow()
@@ -37,51 +39,91 @@ MainWindow::~MainWindow()
     delete ui;
 }
 
+void MainWindow::setStatus(const QString &text, const QString &color, const QString &details)
+{
+    ui->lblDbStatus->setText(text);
+    ui->lblDbStatus->setStyleSheet("color: " + color + ";");
+    ui->lblDbStatus->setToolTip(details);
+}
+
+void MainWindow::setControlsEnabled(bool enabled)
+{
+    ui->btnFindFlights->setEnabled(enabled);
+    ui->btnShowStats->setEnabled(enabled);
+}
+
+void MainWindow::startReconnecting(const QString &text, const QString &details)
+{
+    setControlsEnabled(false);
+    setStatus(text, "red", details);
+    if (!reconnectTimer->isActive()) {
+        reconnectTimer->start();
+    }
+}
+
 void MainWindow::attemptConnection()
 {
     if (db.isOpen()) {
+        reconnectTimer->stop();
         return;
     }
 
-    if (db.open()) {
-        reconnectTimer->stop();
+    setStatus("Подключение…", "gray");
+    ui->lblDbStatus->repaint(); // open() блокирует цикл событий — обновляем надпись сразу
 
-        ui->lblDbStatus->setText("Подключено");
-        ui->lblDbStatus->setStyleSheet("color: green;");
-
-        QSqlQuery query(db);
-        query.prepare("SELECT airport_name->>'ru' as \"airportName\", airport_code FROM bookings.airports_data");
-
-        if (query.exec()) {
-            ui->cbAirports->clear();
-
-            while (query.next()) {
-                QString airportName = query.value(0).toString();
-                QString airportCode = query.value(1).toString();
-
-                ui->cbAirports->addItem(airportName, QVariant(airportCode));
-            }
-
-            ui->btnFindFlights->setEnabled(true);
-            ui->btnShowStats->setEnabled(true);
-        } else {
-            QMessageBox::critical(this, "Ошибка БД",
-                                  "Не удалось загрузить список аэропортов:\n" + query.lastError().text());
-        }
-
+    if (!db.open()) {
+        startReconnecting("Отключено, повтор через 5 с", db.lastError().text());
+        return;
     }
-    else {
-        ui->lblDbStatus->setText("Отключено");
-        ui->lblDbStatus->setStyleSheet("color: red;");
 
-        QMessageBox::critical(this, "Ошибка подключения",
-                              "Не удалось подключиться к базе данных:\n" + db.lastError().text());
-
-        if (!reconnectTimer->isActive()) {
-            reconnectTimer->start();
-        }
-    }
+    reconnectTimer->stop();
+    setStatus("Подключено", "green");
+    loadAirports();
 }
+
+void MainWindow::loadAirports()
+{
+    QSqlQuery query(db);
+    query.prepare("SELECT airport_name->>'ru' as \"airportName\", airport_code FROM bookings.airports_data");
+
+    if (!query.exec()) {
+        handleQueryError(query, "Не удалось загрузить список аэропортов");
+        return;
+    }
+
+    // После переподключения сохраняем выбранный аэропорт
+    const QString selectedCode = ui->cbAirports->currentData().toString();
+    ui->cbAirports->clear();
+
+    while (query.next()) {
+        QString airportName = query.value(0).toString();
+        QString airportCode = query.value(1).toString();
+
+        ui->cbAirports->addItem(airportName, QVariant(airportCode));
+    }
+
+    const int index = ui->cbAirports->findData(selectedCode);
+    if (index >= 0) {
+        ui->cbAirports->setCurrentIndex(index);
+    }
+
+    setControlsEnabled(true);
+}
+
+void MainWindow::handleQueryError(const QSqlQuery &query, const QString &what)
+{
+    const QString error = query.lastError().text();
+
+    QSqlQuery ping(db);
+    if (!db.isOpen() || !ping.exec("SELECT 1")) {
+        db.close();
+        startReconnecting("Связь потеряна, повтор через 5 с", error);
+        return;
+    }
+
+    QMessageBox::warning(this, "Ошибка запроса", what + ":\n" + error);
+}
+
 void MainWindow::on_btnFindFlights_clicked()
 {
 
@@ -100,9 +142,12 @@ void MainWindow::on_btnFindFlights_clicked()
 
         query.bindValue(":airportCode", airportCode);
         query.bindValue(":date", dateStr);
-        query.exec();
+        if (!query.exec()) {
+            handleQueryError(query, "Не удалось получить расписание");
+            return;
+        }
 
-        queryModel->setQuery(query);
+        queryModel->setQuery(std::move(query));
         queryModel->setHeaderData(0, Qt::Horizontal, "Номер рейса");
         queryModel->setHeaderData(1, Qt::Horizontal, "Время прилета");
         queryModel->setHeaderData(2, Qt::Horizontal, "Аэропорт отправления");
@@ -116,9 +161,12 @@ void MainWindow::on_btnFindFlights_clicked()
 
         query.bindValue(":airportCode", airportCode);
         query.bindValue(":date", dateStr);
-        query.exec();
+        if (!query.exec()) {
+            handleQueryError(query, "Не удалось получить расписание");
+            return;
+        }
 
-        queryModel->setQuery(query);
+        queryModel->setQuery(std::move(query));
         queryModel->setHeaderData(0, Qt::Horizontal, "Номер рейса");
         queryModel->setHeaderData(1, Qt::Horizontal, "Время вылета");
         queryModel->setHeaderData(2, Qt::Horizontal, "Аэропорт назначения");
@@ -140,4 +188,3 @@ void MainWindow::on_btnShowStats_clicked()
 
     statsDialog.exec();
 }
-
