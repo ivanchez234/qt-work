@@ -1,6 +1,10 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 #include "statisticsdialog.h"
+#include <QCoreApplication>
+#include <QDir>
+#include <QFile>
+#include <QSettings>
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QVariant>
@@ -11,22 +15,33 @@ MainWindow::MainWindow(QWidget *parent)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+    ui->rbDepartures->setChecked(true);
     queryModel = new QSqlQueryModel(this);
     ui->tvSchedule->setModel(queryModel);
     setStatus("Подключение…", "gray");
 
+    // Параметры подключения — в db.ini рядом с исполняемым файлом (образец: db.example.ini)
+    const QString iniPath = QCoreApplication::applicationDirPath() + "/db.ini";
+    QSettings settings(iniPath, QSettings::IniFormat);
+
     db = QSqlDatabase::addDatabase("QPSQL");
-    db.setHostName("981757-ca08998.tmweb.ru");
-    db.setPort(5432);
-    db.setDatabaseName("demo");
-    db.setUserName("netology_usr_cpp");
-    db.setPassword("CppNeto3");
+    db.setHostName(settings.value("db/host").toString());
+    db.setPort(settings.value("db/port", 5432).toInt());
+    db.setDatabaseName(settings.value("db/name", "demo").toString());
+    db.setUserName(settings.value("db/user").toString());
+    db.setPassword(settings.value("db/password").toString());
 
     db.setConnectOptions("connect_timeout=3");
 
     reconnectTimer = new QTimer(this);
     reconnectTimer->setInterval(5000);
     connect(reconnectTimer, &QTimer::timeout, this, &MainWindow::attemptConnection);
+
+    if (!QFile::exists(iniPath)) {
+        setControlsEnabled(false);
+        setStatus("Нет файла настроек db.ini", "red", QDir::toNativeSeparators(iniPath));
+        return;
+    }
 
     QTimer::singleShot(100, this, &MainWindow::attemptConnection);
 }
@@ -84,7 +99,7 @@ void MainWindow::attemptConnection()
 void MainWindow::loadAirports()
 {
     QSqlQuery query(db);
-    query.prepare("SELECT airport_name->>'ru' as \"airportName\", airport_code FROM bookings.airports_data");
+    query.prepare("SELECT airport_name->>'ru' as \"airportName\", airport_code FROM bookings.airports_data ORDER BY \"airportName\"");
 
     if (!query.exec()) {
         handleQueryError(query, "Не удалось загрузить список аэропортов");
